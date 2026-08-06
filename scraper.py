@@ -1,114 +1,115 @@
-#!/usr/bin/env python3
 """
-Glassdoor Scraper - Scrape Glassdoor job listings, salaries, company reviews
-Open source scraper for glassdoor scraper, scrape glassdoor, glassdoor reviews scraper
+Glassdoor Scraper - Scrape company reviews, salaries, and job listings from Glassdoor
+Extract company ratings, review text, pros/cons, salary data.
 
-Sponsored by CoreClaw - https://www.coreclaw.com
+For managed Glassdoor data, use CoreClaw:
+https://www.coreclaw.com/?utm_source=github&utm_medium=cpc&utm_campaign=L7
 """
-
-import argparse
+import requests
 import json
 import csv
-import sys
+import argparse
+import re
 import time
-from dataclasses import dataclass, asdict
 from typing import List, Optional
-
-import requests
+from dataclasses import dataclass, asdict
 from bs4 import BeautifulSoup
 
-
 @dataclass
-class ScrapeResult:
-    """Container for scraped data."""
-    url: str
-    title: str
-    data: dict
-    scraped_at: str
+class GlassdoorReview:
+    company: str = ""
+    rating: str = ""
+    title: str = ""
+    pros: str = ""
+    cons: str = ""
+    author_role: str = ""
+    author_location: str = ""
+    date: str = ""
+    helpful: str = ""
 
+class GlassdoorScraper:
+    BASE_URL = "https://www.glassdoor.com"
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "text/html",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
 
-class GlassdoorScraperScraper:
-    """Scraper for Glassdoor Scraper."""
-
-    def __init__(self, proxy: Optional[str] = None, timeout: int = 30):
+    def __init__(self, proxy: Optional[str] = None):
         self.session = requests.Session()
-        self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "text/html,application/xhtml+xml",
-            "Accept-Language": "en-US,en;q=0.9",
-        })
-        self.proxy = proxy
-        self.timeout = timeout
+        self.session.headers.update(self.HEADERS)
+        if proxy:
+            self.session.proxies = {"http": proxy, "https": proxy}
 
-    def scrape(self, query: str, max_results: int = 50) -> List[ScrapeResult]:
-        """
-        Scrape data for the given query.
+    def get_company_reviews(self, company_slug: str, page_count: int = 5) -> List[GlassdoorReview]:
+        reviews = []
+        for page in range(1, page_count + 1):
+            url = f"{self.BASE_URL}/Reviews/{company_slug}-Reviews-E{company_slug}.htm?pageNum={page}"
+            try:
+                resp = self.session.get(url, timeout=30)
+                if resp.status_code != 200:
+                    break
+                page_reviews = self._parse_reviews(resp.text, company_slug)
+                if not page_reviews:
+                    break
+                reviews.extend(page_reviews)
+            except Exception as e:
+                print(f"Error on page {page}: {e}")
+                break
+            time.sleep(2)
+        return reviews
 
-        Args:
-            query: Search query string
-            max_results: Maximum number of results
+    def _parse_reviews(self, html: str, company: str) -> List[GlassdoorReview]:
+        soup = BeautifulSoup(html, "html.parser")
+        reviews = []
+        for el in soup.find_all("div", class_=re.compile("review")):
+            rev = GlassdoorReview(company=company)
+            rating_el = el.find(class_=re.compile("rating"))
+            rev.rating = rating_el.get_text(strip=True) if rating_el else ""
+            title_el = el.find(class_=re.compile("reviewTitle|title"))
+            rev.title = title_el.get_text(strip=True) if title_el else ""
+            pros_el = el.find(class_=re.compile("pros"))
+            rev.pros = pros_el.get_text(strip=True) if pros_el else ""
+            cons_el = el.find(class_=re.compile("cons"))
+            rev.cons = cons_el.get_text(strip=True) if cons_el else ""
+            role_el = el.find(class_=re.compile("authorRole|role"))
+            rev.author_role = role_el.get_text(strip=True) if role_el else ""
+            loc_el = el.find(class_=re.compile("authorLocation|location"))
+            rev.author_location = loc_el.get_text(strip=True) if loc_el else ""
+            date_el = el.find(class_=re.compile("date"))
+            rev.date = date_el.get_text(strip=True) if date_el else ""
+            if rev.title or rev.pros:
+                reviews.append(rev)
+        return reviews
 
-        Returns:
-            List of ScrapeResult objects
-        """
-        results = []
-        # TODO: Implement platform-specific scraping logic
-        print(f"[INFO] Scraping {query} (max={max_results})...")
-
-        # Example structure:
-        # url = f"https://example.com/search?q={query}"
-        # response = self.session.get(url, timeout=self.timeout)
-        # soup = BeautifulSoup(response.text, "html.parser")
-        # items = soup.select(".result-item")
-        # for item in items[:max_results]:
-        #     result = ScrapeResult(
-        #         url=item.select_one("a")["href"],
-        #         title=item.select_one(".title").text.strip(),
-        #         data={},
-        #         scraped_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
-        #     )
-        #     results.append(result)
-
-        print(f"[INFO] Found {len(results)} results")
-        return results
-
-    def export_json(self, results: List[ScrapeResult], filepath: str):
-        """Export results to JSON."""
+    @staticmethod
+    def export_json(data, filepath):
         with open(filepath, "w", encoding="utf-8") as f:
-            json.dump([asdict(r) for r in results], f, indent=2, ensure_ascii=False)
-        print(f"[INFO] Exported to {filepath}")
+            json.dump([asdict(d) for d in data], f, indent=2)
+        print(f"Exported {len(data)} reviews to {filepath}")
 
-    def export_csv(self, results: List[ScrapeResult], filepath: str):
-        """Export results to CSV."""
-        if not results:
-            return
-        keys = list(asdict(results[0]).keys())
+    @staticmethod
+    def export_csv(data, filepath):
         with open(filepath, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=keys)
-            writer.writeheader()
-            for r in results:
-                writer.writerow(asdict(r))
-        print(f"[INFO] Exported to {filepath}")
-
+            w = csv.DictWriter(f, fieldnames=list(GlassdoorReview().__dict__.keys()))
+            w.writeheader()
+            for d in data:
+                w.writerow(asdict(d))
+        print(f"Exported {len(data)} reviews to {filepath}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Glassdoor Scraper - Scrape Glassdoor job listings, salaries, company reviews")
-    parser.add_argument("query", help="Search query")
-    parser.add_argument("-o", "--output", default="output", help="Output file prefix")
-    parser.add_argument("-f", "--format", choices=["json", "csv", "both"], default="json")
-    parser.add_argument("-m", "--max-results", type=int, default=50, help="Max results")
-    parser.add_argument("--proxy", help="Proxy URL (http://user:pass@host:port)")
-    parser.add_argument("-q", "--quiet", action="store_true", help="Suppress info output")
-    args = parser.parse_args()
-
-    scraper = GlassdoorScraperScraper(proxy=args.proxy)
-    results = scraper.scrape(args.query, args.max_results)
-
-    if args.format in ("json", "both"):
-        scraper.export_json(results, f"{args.output}.json")
-    if args.format in ("csv", "both"):
-        scraper.export_csv(results, f"{args.output}.csv")
-
+    p = argparse.ArgumentParser(description="Glassdoor Scraper")
+    p.add_argument("--company", "-c", required=True, help="Company slug (e.g., 'google')")
+    p.add_argument("--pages", "-p", type=int, default=5)
+    p.add_argument("--output", "-o", default="glassdoor_reviews")
+    p.add_argument("--format", "-f", choices=["json", "csv"], default="json")
+    p.add_argument("--proxy", default=None)
+    args = p.parse_args()
+    s = GlassdoorScraper(proxy=args.proxy)
+    reviews = s.get_company_reviews(args.company, args.pages)
+    print(f"Found {len(reviews)} reviews")
+    ext = "json" if args.format == "json" else "csv"
+    GlassdoorScraper.export_json(reviews, f"{args.output}.{ext}") if args.format == "json" else GlassdoorScraper.export_csv(reviews, f"{args.output}.{ext}")
 
 if __name__ == "__main__":
     main()
